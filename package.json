@@ -1,0 +1,19 @@
+{
+  "name": "train-ticket-graph-query-engine",
+  "version": "1.0.0",
+  "description": "RESTful graph query engine for Train Ticket microservices topology",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "express": "^4.21.1"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0",
+    "vitest": "^1.0.0"
+  }
+}

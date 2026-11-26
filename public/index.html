@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Train Ticket Graph Viewer</title>
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js" crossorigin="anonymous"></script>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 16px;
+      background: #ffffff;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .toolbar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+    }
+    .toolbar input[type="text"],
+    .toolbar input[type="number"] {
+      padding: 5px 8px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .toolbar button {
+      padding: 6px 12px;
+      border: 1px solid #0f172a;
+      border-radius: 6px;
+      background: #0f172a;
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .toolbar button.secondary {
+      background: #ffffff;
+      color: #0f172a;
+    }
+    .toolbar button:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      flex: 1;
+      min-height: 0;
+    }
+    #network {
+      width: 100%;
+      height: 100%;
+      background: #f8fafc;
+    }
+    .sidebar {
+      background: #ffffff;
+      border-left: 1px solid #e2e8f0;
+      padding: 14px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    .sidebar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .clear-btn {
+      padding: 3px 8px;
+      font-size: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      background: #ffffff;
+      color: #0f172a;
+      cursor: pointer;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+    .route-item {
+      padding: 8px;
+      margin-bottom: 8px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      background: #f8fafc;
+      word-break: break-word;
+      cursor: pointer;
+    }
+    .route-item:hover,
+    .route-item:focus {
+      border-color: #94a3b8;
+      outline: none;
+    }
+    .route-item.active {
+      border-color: #0f172a;
+      background: #e2e8f0;
+    }
+    .note {
+      color: #475569;
+      font-style: italic;
+    }
+    .error {
+      color: #b91c1c;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label><input type="checkbox" id="publicStart" /> publicStart</label>
+    <label><input type="checkbox" id="endSink" /> endSink</label>
+    <label><input type="checkbox" id="hasVulnerability" /> hasVulnerability</label>
+    <label>startNode <input type="text" id="startNode" placeholder="e.g. auth-service" size="14" /></label>
+    <label>maxDepth <input type="number" id="maxDepth" min="1" max="50" placeholder="default" style="width: 70px" /></label>
+    <button id="queryRoutesBtn">Query /routes</button>
+    <button id="fullGraphBtn" class="secondary">Full /graph</button>
+    <span id="status" aria-live="polite"></span>
+  </div>
+
+  <div class="main">
+    <div id="network"></div>
+    <div class="sidebar">
+      <div class="legend">
+        <span><span class="dot" style="background:#2563eb"></span>Public service</span>
+        <span><span class="dot" style="background:#dc2626"></span>Vulnerable</span>
+        <span><span class="dot" style="background:#059669"></span>RDS/SQL sink</span>
+        <span><span class="dot" style="background:#64748b"></span>Other</span>
+      </div>
+      <div class="sidebar-header">
+        <h3 style="margin: 0">Matched Routes (<span id="routeCount">0</span>)</h3>
+        <button id="clearHighlightBtn" class="clear-btn" type="button">Clear highlight</button>
+      </div>
+      <div id="routesList">Showing full graph. Click "Query /routes" to inspect paths.</div>
+    </div>
+  </div>
+
+  <script>
+    const MAX_RENDERED_ROUTES = 200;
+
+    const container = document.getElementById("network");
+    const statusEl = document.getElementById("status");
+    const routeCountEl = document.getElementById("routeCount");
+    const routesListEl = document.getElementById("routesList");
+    const clearHighlightBtn = document.getElementById("clearHighlightBtn");
+    const queryBtn = document.getElementById("queryRoutesBtn");
+    const fullGraphBtn = document.getElementById("fullGraphBtn");
+
+    let network = null;
+    let visNodes = null;
+    let visEdges = null;
+    let currentNodes = [];
+    let currentEdges = [];
+    let currentRoutes = [];
+    let controller = null;
+
+    // ---------- helpers ----------
+
+    async function fetchJson(url, signal) {
+      const res = await fetch(url, { signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      return res.json();
+    }
+
+    function setLoading(isLoading) {
+      queryBtn.disabled = isLoading;
+      fullGraphBtn.disabled = isLoading;
+    }
+
+    function setStatus(text, isError = false) {
+      statusEl.className = isError ? "error" : "";
+      statusEl.textContent = text;
+    }
+
+    // ---------- node / edge styling ----------
+
+    function getNodeColor(node) {
+      const kind = (node.kind || "").toLowerCase();
+      const engine = String(node.metadata?.engine || "").toLowerCase();
+      const isSink =
+        kind === "rds" ||
+        kind === "sql" ||
+        ["postgres", "mysql", "mariadb", "sqlserver", "oracle"].some((e) => engine.includes(e));
+
+      if (isSink) return { background: "#d1fae5", border: "#059669" };
+      if (Array.isArray(node.vulnerabilities) && node.vulnerabilities.length > 0) {
+        return { background: "#fee2e2", border: "#dc2626" };
+      }
+      if (node.kind === "service" && node.publicExposed) {
+        return { background: "#dbeafe", border: "#2563eb" };
+      }
+      return { background: "#f1f5f9", border: "#64748b" };
+    }
+
+    function buildNodeItem(node, dimmed) {
+      const vulnCount = Array.isArray(node.vulnerabilities) ? node.vulnerabilities.length : 0;
+      return {
+        id: node.name,
+        label: node.name,
+        title: `kind: ${node.kind} | publicExposed: ${node.publicExposed} | vulns: ${vulnCount}`,
+        color: dimmed ? { background: "#f8fafc", border: "#cbd5e1" } : getNodeColor(node),
+        font: { color: dimmed ? "#94a3b8" : "#0f172a" },
+        borderWidth: dimmed ? 1 : 2,
+      };
+    }
+
+    function buildEdgeItem(edge) {
+      return {
+        id: edge.id,
+        from: edge.source,
+        to: edge.target,
+        arrows: "to",
+        width: 1.5,
+        color: { color: "#64748b" },
+      };
+    }
+
+    function applyHighlight(route) {
+      if (!visNodes || !visEdges) return;
+
+      // No route: restore the default look.
+      if (!Array.isArray(route) || route.length === 0) {
+        visNodes.update(currentNodes.map((n) => buildNodeItem(n, false)));
+        visEdges.update(currentEdges.map((e) => buildEdgeItem(e)));
+        return;
+      }
+
+      const activeNodes = new Set(route);
+      const activeEdges = new Set();
+      for (let i = 0; i < route.length - 1; i++) {
+        activeEdges.add(`${route[i]}->${route[i + 1]}`);
+      }
+
+      visNodes.update(currentNodes.map((n) => buildNodeItem(n, !activeNodes.has(n.name))));
+      visEdges.update(
+        currentEdges.map((e) => {
+          const onPath = activeEdges.has(e.id);
+          return {
+            id: e.id,
+            width: onPath ? 3.5 : 1,
+            color: { color: onPath ? "#0f172a" : "#e2e8f0" },
+          };
+        })
+      );
+    }
+
+    // ---------- rendering ----------
+
+    function renderGraph(nodes, edges) {
+      currentNodes = nodes;
+      currentEdges = edges;
+
+      if (network) {
+        network.destroy();
+        network = null;
+      }
+
+      visNodes = new vis.DataSet(nodes.map((n) => buildNodeItem(n, false)));
+      visEdges = new vis.DataSet(edges.map((e) => buildEdgeItem(e)));
+
+      network = new vis.Network(
+        container,
+        { nodes: visNodes, edges: visEdges },
+        {
+          layout: { improvedLayout: true },
+          physics: { enabled: true, stabilization: { iterations: 150 } },
+          edges: { smooth: { type: "cubicBezier", forceDirection: "horizontal", roundness: 0.3 } },
+        }
+      );
+
+      network.once("stabilized", () => {
+        network.setOptions({ physics: false });
+      });
+    }
+
+    function renderRoutes(routes, hint) {
+      currentRoutes = routes;
+      routeCountEl.textContent = String(routes.length);
+      routesListEl.replaceChildren();
+
+      if (routes.length === 0) {
+        routesListEl.textContent = hint || "No matching routes.";
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      routes.slice(0, MAX_RENDERED_ROUTES).forEach((route, i) => {
+        const item = document.createElement("div");
+        item.className = "route-item";
+        item.tabIndex = 0;
+        item.dataset.routeIndex = String(i);
+        item.textContent = `#${i + 1}: ${route.join(" -> ")}`; // textContent: no HTML injection
+        frag.appendChild(item);
+      });
+      routesListEl.appendChild(frag);
+
+      if (routes.length > MAX_RENDERED_ROUTES) {
+        const note = document.createElement("div");
+        note.className = "note";
+        note.textContent = `Showing first ${MAX_RENDERED_ROUTES} of ${routes.length} routes`;
+        routesListEl.appendChild(note);
+      }
+    }
+
+    function selectRoute(el) {
+      routesListEl.querySelectorAll(".route-item").forEach((item) => item.classList.remove("active"));
+      el.classList.add("active");
+      applyHighlight(currentRoutes[Number(el.dataset.routeIndex)]);
+    }
+
+    // One listener for the whole list (instead of one per route).
+    routesListEl.addEventListener("click", (e) => {
+      const el = e.target.closest(".route-item");
+      if (el) selectRoute(el);
+    });
+    routesListEl.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const el = e.target.closest(".route-item");
+      if (el) {
+        e.preventDefault();
+        selectRoute(el);
+      }
+    });
+
+    // ---------- API calls ----------
+
+    async function loadFullGraph() {
+      controller?.abort();
+      controller = new AbortController();
+      const { signal } = controller;
+
+      setStatus("Loading /graph...");
+      setLoading(true);
+      try {
+        const data = await fetchJson("/graph", signal);
+        renderGraph(data.nodes || [], data.edges || []);
+        currentRoutes = [];
+        routeCountEl.textContent = "0";
+        routesListEl.textContent = 'Showing full graph. Click "Query /routes" to inspect paths.';
+        setStatus(`${(data.nodes || []).length} nodes, ${(data.edges || []).length} edges`);
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        setStatus(err.message, true);
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
+
+    async function queryRoutes() {
+      const params = new URLSearchParams();
+      for (const name of ["publicStart", "endSink", "hasVulnerability"]) {
+        if (document.getElementById(name).checked) params.set(name, "true");
+      }
+
+      const startNode = document.getElementById("startNode").value.trim();
+      const maxDepth = document.getElementById("maxDepth").value.trim();
+      if (startNode) params.set("startNode", startNode);
+      if (maxDepth) params.set("maxDepth", maxDepth);
+
+      controller?.abort(); // cancel a previous request still in flight
+      controller = new AbortController();
+      const { signal } = controller;
+
+      setStatus("Querying /routes...");
+      setLoading(true);
+      try {
+        const data = await fetchJson(`/routes?${params.toString()}`, signal);
+        renderGraph(data.nodes || [], data.edges || []);
+        renderRoutes(data.routes || []);
+        setStatus(`${data.count} route(s) matched`);
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        setStatus(err.message, true);
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
+
+    // ---------- events ----------
+
+    clearHighlightBtn.addEventListener("click", () => {
+      routesListEl.querySelectorAll(".route-item").forEach((item) => item.classList.remove("active"));
+      applyHighlight(null);
+    });
+
+    fullGraphBtn.addEventListener("click", loadFullGraph);
+    queryBtn.addEventListener("click", queryRoutes);
+
+    loadFullGraph();
+  </script>
+</body>
+</html>
