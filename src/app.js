@@ -1,6 +1,7 @@
 import express from "express";
 import { fileURLToPath } from "url";
 import { RESERVED_PARAMS } from "./filters.js";
+import { UnknownNodeError } from "./queryEngine.js";
 const MAX_DEPTH_LIMIT = 50;
 
 export class HttpError extends Error {
@@ -29,14 +30,10 @@ export function createApp(queryEngine, filterRegistry) {
   app.get("/routes", (req, res, next) => {
     try {
       const parsed = parseRoutesQuery(req.query, filterRegistry);
-      if (parsed.startNode && !queryEngine.hasNode(parsed.startNode)) {
-        throw new HttpError(404, `Unknown startNode '${parsed.startNode}'`);
-      }
-
       const result = queryEngine.findRoutes(parsed);
       res.status(200).json(result);
     } catch (err) {
-      next(err);
+      next(err instanceof UnknownNodeError ? new HttpError(404, err.message) : err);
     }
   });
 
@@ -111,7 +108,7 @@ function parseRoutesQuery(query, filterRegistry) {
 
   let maxDepth;
   if (query.maxDepth !== undefined) {
-    const parsedDepth = Number(query.maxDepth);
+    const parsedDepth = /^\d+$/.test(query.maxDepth) ? Number(query.maxDepth) : NaN;
     if (!Number.isInteger(parsedDepth) || parsedDepth < 1) {
       throw new HttpError(400, "Query parameter 'maxDepth' must be a positive integer");
     }
@@ -121,5 +118,13 @@ function parseRoutesQuery(query, filterRegistry) {
     maxDepth = parsedDepth;
   }
 
-  return { activeFilters, startNode, maxDepth };
+  let maximal = true;
+  if (query.maximal !== undefined) {
+    if (query.maximal !== "true" && query.maximal !== "false") {
+      throw new HttpError(400, "Query parameter 'maximal' must be 'true' or 'false'");
+    }
+    maximal = query.maximal === "true";
+  }
+
+  return { activeFilters, startNode, maxDepth, maximal };
 }

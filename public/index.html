@@ -211,6 +211,9 @@
         <label class="chip" title="At least one service on the route has a known vulnerability">
           <input type="checkbox" id="hasVulnerability" /><span>Passes through a vulnerable service</span>
         </label>
+        <label class="chip" title="Hide sub-routes: keep only routes that cannot be extended at either end">
+          <input type="checkbox" id="maximal" checked  /><span>Only complete routes</span>
+        </label>
       </div>
       <div class="field">
         <label for="startNode">Start service</label>
@@ -505,6 +508,7 @@
       const maxDepth = $("maxDepth").value.trim();
       if (startNode) params.set("startNode", startNode);
       if (maxDepth) params.set("maxDepth", maxDepth);
+      if ($("maximal").checked) params.set("maximal", $("maximal").checked ? "true" : "false");
 
       if (!params.has("startNode") && !Object.keys(FILTER_TEXT).some((n) => params.has(n))) {
         setStatus("Choose at least one option or a start service.", true);

@@ -1,4 +1,4 @@
-export const RESERVED_PARAMS = new Set(["filters", "startNode", "maxDepth"]);
+export const RESERVED_PARAMS = new Set(["filters", "startNode", "maxDepth", "maximal"]);
 const SINK_KINDS = new Set(["rds", "sql"]);
 const SQL_ENGINES = ["postgres", "mysql", "mariadb", "sqlserver", "oracle"];
 export function isPublicService(node) {

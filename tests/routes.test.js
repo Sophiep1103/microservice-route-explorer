@@ -99,6 +99,7 @@ describe("GET /routes", () => {
     ["maxDepth 0", "/routes?maxDepth=0"],
     ["maxDepth too big", "/routes?maxDepth=51"],
     ["maxDepth not a number", "/routes?maxDepth=abc"],
+    ["bad maximal value", "/routes?maximal=maybe"],
   ])("400 on %s", async (_name, url) => {
     expect((await request(app).get(url)).status).toBe(400);
   });
@@ -127,5 +128,22 @@ describe("GET /routes", () => {
     expect(engine.findRoutes({ startNode: "A", maxDepth: 1 }).truncated).toBe(true);
     expect(engine.findRoutes({ startNode: "A", maxDepth: 2 }).truncated).toBe(false);
   });
+  it("maximal keeps only routes that cannot be extended", () => {
+  const { engine } = engineFor({
+    nodes: [{ name: "A" }, { name: "B" }, { name: "C" }],
+    edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
+  });
+  expect(engine.findRoutes({}).count).toBe(3);
+  expect(engine.findRoutes({ maximal: true }).routes).toEqual([["A", "B", "C"]]);
+  expect(engine.findRoutes({ startNode: "B", maximal: true }).routes).toEqual([["B", "C"]]);
+});
+it("maximal with startNode checks only the end", async () => {
+  const res = await request(app).get("/routes?startNode=user-service&maximal=true");
+  expect(res.body.count).toBe(2);
+});
 
+it("maximal on the whole graph", async () => {
+  const res = await request(app).get("/routes?maximal=true");
+  expect(res.body.count).toBe(217);
+});
 });
