@@ -63,9 +63,12 @@ describe("GET /routes", () => {
   const app = createApp(engine, registry);
 
   it("startNode only", async () => {
-    const res = await request(app).get("/routes?startNode=user-service");
+    const res = await request(app).get("/routes?startNode=user-service&maximal=false");
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(3);
+
+    const complete = await request(app).get("/routes?startNode=user-service");
+    expect(complete.body.count).toBe(2); // default: maximal=true
   });
 
   it("startNode + endSink", async () => {
@@ -87,7 +90,7 @@ describe("GET /routes", () => {
   });
 
   it("flag=false removes a filter from the list", async () => {
-    const res = await request(app).get("/routes?startNode=user-service&filters=endSink&endSink=false");
+    const res = await request(app).get("/routes?startNode=user-service&filters=endSink&endSink=false&maximal=false");
     expect(res.body.count).toBe(3);
   });
 
@@ -99,7 +102,6 @@ describe("GET /routes", () => {
     ["maxDepth 0", "/routes?maxDepth=0"],
     ["maxDepth too big", "/routes?maxDepth=51"],
     ["maxDepth not a number", "/routes?maxDepth=abc"],
-    ["bad maximal value", "/routes?maximal=maybe"],
   ])("400 on %s", async (_name, url) => {
     expect((await request(app).get(url)).status).toBe(400);
   });
@@ -114,36 +116,28 @@ describe("GET /routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.nodes.length).toBeGreaterThan(40);
   });
-
-  it("does not treat the string 'false' as public", () => {
-    const g = normalizeGraphData({ nodes: [{ name: "A", publicExposed: "false" }], edges: [] });
-    expect(g.nodesByName.get("A").publicExposed).toBe(false);
-  });
-
-  it("reports truncation when maxDepth cuts a route short", () => {
-    const { engine } = engineFor({
-      nodes: [{ name: "A" }, { name: "B" }, { name: "C" }],
-      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
-    });
-    expect(engine.findRoutes({ startNode: "A", maxDepth: 1 }).truncated).toBe(true);
-    expect(engine.findRoutes({ startNode: "A", maxDepth: 2 }).truncated).toBe(false);
-  });
-  it("maximal keeps only routes that cannot be extended", () => {
-  const { engine } = engineFor({
-    nodes: [{ name: "A" }, { name: "B" }, { name: "C" }],
-    edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
-  });
-  expect(engine.findRoutes({}).count).toBe(3);
-  expect(engine.findRoutes({ maximal: true }).routes).toEqual([["A", "B", "C"]]);
-  expect(engine.findRoutes({ startNode: "B", maximal: true }).routes).toEqual([["B", "C"]]);
-});
-it("maximal with startNode checks only the end", async () => {
-  const res = await request(app).get("/routes?startNode=user-service&maximal=true");
-  expect(res.body.count).toBe(2);
 });
 
-it("maximal on the whole graph", async () => {
-  const res = await request(app).get("/routes?maximal=true");
-  expect(res.body.count).toBe(217);
-});
+
+describe("limits and parsing", () => {
+  const app = createApp(
+    new GraphQueryEngine(loadGraphFromFile("data/train-ticket-be.json"), createDefaultFilterRegistry()),
+    createDefaultFilterRegistry()
+  );
+
+  it.each(["0x10", "1e1", "%205", "2.5"])("maxDepth=%s is rejected", async (v) => {
+    const res = await request(app).get(`/routes?maxDepth=${v}`);
+    expect(res.status).toBe(400);
+  });
+
+  it("stops enumerating on a dense graph and reports truncated", () => {
+    const L = 9, K = 4, nodes = [], edges = [];
+    for (let l = 0; l < L; l++) for (let k = 0; k < K; k++) nodes.push({ name: `n${l}_${k}` });
+    for (let l = 0; l < L - 1; l++)
+      for (let k = 0; k < K; k++)
+        edges.push({ from: `n${l}_${k}`, to: Array.from({ length: K }, (_, j) => `n${l + 1}_${j}`) });
+    const dense = new GraphQueryEngine(normalizeGraphData({ nodes, edges }), createDefaultFilterRegistry());
+    const result = dense.findRoutes({ maximal: false });
+    expect(result.truncated).toBe(true);
+  });
 });

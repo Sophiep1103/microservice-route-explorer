@@ -2,7 +2,9 @@
 
 A Node.js (Express) REST API that loads the Train Ticket microservices topology from a JSON file and answers one question: **which routes exist between services, optionally filtered?**
 
-Filters are small pluggable predicates, so security questions such as "internet to database through a vulnerable service" are expressed by combining them. Responses are returned as `nodes` + `edges`, so a client can draw them directly. A small optional viewer is served at `/`.By default only **complete routes** are returned, meaning routes that cannot be extended at either end. Add `maximal=false` to get every path, including pieces of longer routes.
+Filters are small pluggable predicates, so security questions such as "internet to database through a vulnerable service" are expressed by combining them. Responses are returned as `nodes` + `edges`, so a client can draw them directly. A small optional viewer is served at `/`.
+
+By default only **complete routes** are returned, meaning routes that cannot be extended at either end. Add `maximal=false` to get every path, including pieces of longer routes.
 
 JavaScript (ES modules) was chosen deliberately.
 
@@ -22,7 +24,7 @@ Try these:
 ```text
 GET /routes?startNode=user-service&endSink=true
 GET /routes?endSink=true&hasVulnerability=true
-GET /routes?endSink=true&hasVulnerability=true&maximal=true
+GET /routes?endSink=true&hasVulnerability=true&maximal=false   # every path, including sub-routes
 ```
 
 ## 1. Definitions and assumptions
@@ -32,26 +34,26 @@ GET /routes?endSink=true&hasVulnerability=true&maximal=true
 A **route** is a simple directed path `v0 -> v1 -> ... -> vk` with `k >= 1` (at least one edge), following the direction of the edges. **No node appears twice in the same route**.
 
 * A route can start and end at any node.
-* Because every path counts, **every sub-path of a longer path is also a route**: `A->B` and `A->B->C` are both routes.
+* Because every path counts, **every sub-path of a longer path is also a route**: `A->B` and `A->B->C` are both routes. By default the API hides these sub-routes (see `maximal` below); `maximal=false` returns all of them.
 * **Why simple paths:** microservice graphs can contain cycles, and the "no repeated node" rule guarantees that the search ends. It also keeps every filter a plain predicate over a route.
 * **`maxDepth`** limits the number of **edges** in a route (default 20, maximum 50).
 
-### Hiding sub-routes: `maximal=true`
+### Hiding sub-routes: `maximal` (default `true`)
 
-With `maximal=true` the API returns only **maximal routes**, which are routes that cannot be extended:
+With `maximal=true` (the default) the API returns only **maximal routes**, which are routes that cannot be extended:
 
 * the last node has no neighbour that is not already on the route, and
 * no node outside the route points to its first node.
 
 When `startNode` is given, the start is fixed by the caller, so only the end is checked. A route cut short by `maxDepth` counts as final, and `truncated` is set (see the response format).
 
-| Query | all routes (default) | `maximal=false` |
+| Query | `maximal=true` (default) | `maximal=false` (all routes) |
 | :--- | ---: | ---: |
-| no filters | 440 | 217 |
-| `hasVulnerability` | 121 | 60 |
-| `endSink` | 41 | 30 |
-| `publicStart` | 6 | 5 |
-| `startNode=user-service` | 3 | 2 |
+| no filters | 217 | 440 |
+| `hasVulnerability` | 60 | 121 |
+| `endSink` | 30 | 41 |
+| `publicStart` | 5 | 6 |
+| `startNode=user-service` | 2 | 3 |
 
 Filters are applied after the routes are enumerated, so `maximal` decides which routes exist and the filters then keep a subset of them.
 
@@ -97,7 +99,7 @@ On this snapshot, **`publicStart=true&endSink=true` returns 0 routes**. This is 
 
 In a real system the gateway would forward traffic to services such as `preserve-service` or `travel-plan-service`, so these edges look like they are missing from the file. The code does not invent them.
 
-Other combinations do return results. `endSink=true&hasVulnerability=true` returns the same routes as `endSink=true` (41, or 30 with `maximal=true`), because the database is only reachable through `auth-service` and `order-service`, and both have vulnerabilities.
+Other combinations do return results. `endSink=true&hasVulnerability=true` returns the same routes as `endSink=true` (30, or 41 with `maximal=false`), because the database is only reachable through `auth-service` and `order-service`, and both have vulnerabilities.
 
 ## 4. Algorithm
 
@@ -120,10 +122,10 @@ A route is recorded at **every step**, not only at dead ends. This matters for `
 
 ### Complexity and trade-offs
 
-* The number of simple paths can grow exponentially with branching. That is the worst case, and `maxDepth` (maximum 50) bounds it.
-* On this graph it is small: 47 nodes, 98 edges, **no cycles**, longest route 5 edges, 440 routes in total. Cycle protection is therefore covered by a unit test and not by the real data.
+* The number of simple paths can grow exponentially with branching. That is the worst case, `maxDepth` (maximum 50) bounds the path length, and a safety cap of 200,000 DFS steps per query bounds the work. If the cap is hit, the response has `truncated: true`.
+* On this graph it is small: 47 nodes, 98 edges, **no cycles**, longest route 5 edges, 440 routes in total (217 complete routes). Cycle protection is therefore covered by a unit test and not by the real data.
 * Filters run after enumeration. This keeps the design simple and generic, but work is wasted when few routes match.
-* Possible improvements for larger graphs (not implemented): start only from public nodes when `publicStart` is active, prune branches that cannot reach a sink, add a `limit` and pagination, and cache results, since the graph does not change.
+* Possible improvements for larger graphs (not implemented): start only from public nodes when `publicStart` is active, prune branches that cannot reach a sink, add pagination, and cache results, since the graph does not change.
 
 ## 5. API
 
@@ -161,13 +163,13 @@ Returns the full graph: `{ "nodes": [...], "edges": [...] }`.
 ```
 
 * `nodes` and `edges` are the unique nodes and edges of all matching routes (node objects are shortened above).
-* `truncated` is `true` only when `maxDepth` stopped a route that could have continued, so a cut-off is never silent.
+* `truncated` is `true` when `maxDepth` stopped a route that could have continued, or when the step cap stopped the search, so a cut-off is never silent.
 
 #### Errors
 
 | Status | When |
 | :--- | :--- |
-| `400` | Unknown query parameter or filter name, a flag that is not `true`/`false`, a repeated parameter, an empty `startNode`, or an invalid `maxDepth` (not an integer, below 1 or above 50) |
+| `400` | Unknown query parameter or filter name, a flag that is not `true`/`false`, a repeated parameter, an empty `startNode`, or an invalid `maxDepth` (not plain digits, below 1 or above 50) |
 | `404` | Unknown `startNode`, or unknown endpoint |
 | `200` | A valid query with no matches: `count: 0` and empty lists |
 | `500` | Unexpected error, returned as a generic message with no stack trace |
