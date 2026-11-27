@@ -58,13 +58,8 @@ export function createApp(queryEngine, filterRegistry) {
 
   return app;
 }
-
 function parseRoutesQuery(query, filterRegistry) {
-  const activeFilters = [];
-
-
   const allowed = new Set([...RESERVED_PARAMS, ...filterRegistry.getAvailableFilters()]);
-  const params = Object.create(null);
 
   for (const [key, value] of Object.entries(query)) {
     if (!allowed.has(key)) {
@@ -73,65 +68,49 @@ function parseRoutesQuery(query, filterRegistry) {
     if (Array.isArray(value)) {
       throw new HttpError(400, `Duplicate query parameter '${key}' is not supported`);
     }
-    if (typeof value === "string" && !RESERVED_PARAMS.has(key)) {
-      params[key] = value;
+    if (typeof value !== "string") {
+      throw new HttpError(400, `Query parameter '${key}' must be a single value`);
     }
   }
 
-  // Optional comma-separated filter list: ?filters=publicStart,endSink
-  if (typeof query.filters === "string" && query.filters.trim().length > 0) {
-    const requested = query.filters
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean);
+  const activeFilters = [];
 
+  // ?filters=publicStart,endSink
+  if (query.filters !== undefined && query.filters.trim().length > 0) {
+    const requested = query.filters.split(",").map((name) => name.trim()).filter(Boolean);
     for (const filterName of requested) {
       if (!filterRegistry.has(filterName)) {
         throw new HttpError(400, `Unknown filter '${filterName}'`);
       }
-      if (!activeFilters.includes(filterName)) {
-        activeFilters.push(filterName);
-      }
+      if (!activeFilters.includes(filterName)) activeFilters.push(filterName);
     }
   }
 
-  // Boolean filter flags: ?publicStart=true&endSink=true&hasVulnerability=true
+  // ?publicStart=true&endSink=false ...
   for (const filterName of filterRegistry.getAvailableFilters()) {
     const rawFlag = query[filterName];
     if (rawFlag === undefined) continue;
 
     if (rawFlag === "true") {
-      if (!activeFilters.includes(filterName)) {
-        activeFilters.push(filterName);
-      }
+      if (!activeFilters.includes(filterName)) activeFilters.push(filterName);
     } else if (rawFlag === "false") {
       const idx = activeFilters.indexOf(filterName);
-      if (idx !== -1) {
-        activeFilters.splice(idx, 1);
-      }
+      if (idx !== -1) activeFilters.splice(idx, 1);
     } else {
-      throw new HttpError(
-        400,
-        `Invalid value for filter '${filterName}': expected 'true' or 'false'`
-      );
+      throw new HttpError(400, `Invalid value for filter '${filterName}': expected 'true' or 'false'`);
     }
   }
 
-  // Optional startNode filter
   let startNode;
   if (query.startNode !== undefined) {
-    if (typeof query.startNode !== "string" || query.startNode.trim() === "") {
+    if (query.startNode.trim() === "") {
       throw new HttpError(400, "Query parameter 'startNode' must be a non-empty string");
     }
     startNode = query.startNode.trim();
   }
 
-  // Optional maxDepth bound
   let maxDepth;
   if (query.maxDepth !== undefined) {
-    if (typeof query.maxDepth !== "string") {
-      throw new HttpError(400, "Query parameter 'maxDepth' must be a positive integer");
-    }
     const parsedDepth = Number(query.maxDepth);
     if (!Number.isInteger(parsedDepth) || parsedDepth < 1) {
       throw new HttpError(400, "Query parameter 'maxDepth' must be a positive integer");
@@ -142,10 +121,5 @@ function parseRoutesQuery(query, filterRegistry) {
     maxDepth = parsedDepth;
   }
 
-  return {
-    activeFilters,
-    params,
-    startNode,
-    maxDepth,
-  };
+  return { activeFilters, startNode, maxDepth };
 }

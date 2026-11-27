@@ -113,4 +113,19 @@ describe("GET /routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.nodes.length).toBeGreaterThan(40);
   });
+
+  it("does not treat the string 'false' as public", () => {
+    const g = normalizeGraphData({ nodes: [{ name: "A", publicExposed: "false" }], edges: [] });
+    expect(g.nodesByName.get("A").publicExposed).toBe(false);
+  });
+
+  it("reports truncation when maxDepth cuts a route short", () => {
+    const { engine } = engineFor({
+      nodes: [{ name: "A" }, { name: "B" }, { name: "C" }],
+      edges: [{ from: "A", to: "B" }, { from: "B", to: "C" }],
+    });
+    expect(engine.findRoutes({ startNode: "A", maxDepth: 1 }).truncated).toBe(true);
+    expect(engine.findRoutes({ startNode: "A", maxDepth: 2 }).truncated).toBe(false);
+  });
+
 });

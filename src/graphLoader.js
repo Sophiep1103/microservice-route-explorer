@@ -10,20 +10,21 @@ export function loadGraphFromFile(filePath) {
 }
 
 export function normalizeGraphData(data) {
-  const nodesByName = new Map();
   if (!Array.isArray(data?.nodes) || !Array.isArray(data?.edges)) {
     throw new Error("Invalid graph file: 'nodes' and 'edges' must be arrays");
   }
 
-  for (const rawNode of data?.nodes ?? []) {
-    const name = rawNode?.name?.trim();
+  const nodesByName = new Map();
+
+  for (const rawNode of data.nodes) {
+    const name = typeof rawNode?.name === "string" ? rawNode.name.trim() : "";
     if (!name) continue;
     if (nodesByName.has(name)) console.warn(`Duplicate node '${name}', last one wins`);
 
     nodesByName.set(name, {
       ...rawNode,
       name,
-      publicExposed: Boolean(rawNode.publicExposed),
+      publicExposed: rawNode.publicExposed === true,
       vulnerabilities: Array.isArray(rawNode.vulnerabilities) ? rawNode.vulnerabilities : [],
     });
   }
@@ -31,8 +32,8 @@ export function normalizeGraphData(data) {
   const adjacency = new Map();
   const edgeMap = new Map();
 
-  for (const rawEdge of data?.edges ?? []) {
-    const source = rawEdge?.from?.trim();
+  for (const rawEdge of data.edges) {
+    const source = typeof rawEdge?.from === "string" ? rawEdge.from.trim() : "";
     if (!source) continue;
 
     if (!nodesByName.has(source)) {
@@ -54,17 +55,14 @@ export function normalizeGraphData(data) {
 
       const edge = { id: edgeId, source, target };
       edgeMap.set(edgeId, edge);
+
       const neighbors = adjacency.get(source) ?? [];
       neighbors.push({ target, edge });
       adjacency.set(source, neighbors);
     }
   }
 
-  return {
-    nodesByName,
-    adjacency,
-    edges: Array.from(edgeMap.values()),
-  };
+  return { nodesByName, adjacency, edges: Array.from(edgeMap.values()) };
 }
 
 function createFallbackNode(name) {

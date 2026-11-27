@@ -19,34 +19,32 @@ export class GraphQueryEngine {
     };
   }
 
-  enumerateSimplePaths(options = {}) {
+ enumerateSimplePaths(options = {}) {
     const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
     const routes = [];
+    let depthLimited = false;
 
-    const startOk = options.startPredicate ?? (() => true);
     const candidateStarts = options.startNode
-      ? [options.startNode].filter((n) => this.#graph.nodesByName.has(n))
-      : Array.from(this.#graph.nodesByName.values()).filter(startOk).map((n) => n.name);
+      ? [options.startNode].filter((name) => this.#graph.nodesByName.has(name))
+      : Array.from(this.#graph.nodesByName.keys());
 
     const dfs = (currentName, visited, pathNodes, pathEdges) => {
       if (pathEdges.length > 0) {
-        routes.push({
-          nodes: [...pathNodes],
-          edges: [...pathEdges],
-        });
-      }
-
-      if (pathEdges.length >= maxDepth) {
-        return;
+        routes.push({ nodes: [...pathNodes], edges: [...pathEdges] });
       }
 
       const neighbors = this.#graph.adjacency.get(currentName) ?? [];
+
+      if (pathEdges.length >= maxDepth) {
+        if (neighbors.some(({ target }) => !visited.has(target))) depthLimited = true;
+        return;
+      }
+
       for (const { target: nextName, edge } of neighbors) {
         if (visited.has(nextName)) continue;
-        const nextNode = this.#graph.nodesByName.get(nextName);
 
         visited.add(nextName);
-        pathNodes.push(nextNode);
+        pathNodes.push(this.#graph.nodesByName.get(nextName));
         pathEdges.push(edge);
 
         dfs(nextName, visited, pathNodes, pathEdges);
@@ -59,41 +57,28 @@ export class GraphQueryEngine {
 
     for (const startName of candidateStarts) {
       const startNode = this.#graph.nodesByName.get(startName);
-      if (!startNode) continue;
-
-      const visited = new Set([startName]);
-      dfs(startName, visited, [startNode], []);
+      dfs(startName, new Set([startName]), [startNode], []);
     }
 
-    return routes;
+    return { routes, depthLimited };
   }
 
   findRoutes(options = {}) {
-    const {
-      activeFilters = [],
-      params = {},
-      startNode,
-      maxDepth,
-    } = options;
+    const { activeFilters = [], startNode, maxDepth } = options;
 
-    const allRoutes = this.enumerateSimplePaths({ startNode, maxDepth });
-    const context = { params };
-    const matchedRoutes = this.#filterRegistry.applyAll(allRoutes, activeFilters, context);
+    const { routes: allRoutes, depthLimited } = this.enumerateSimplePaths({ startNode, maxDepth });
+    const matchedRoutes = this.#filterRegistry.applyAll(allRoutes, activeFilters, {});
 
     const uniqueNodes = new Map();
     const uniqueEdges = new Map();
-
     for (const route of matchedRoutes) {
-      for (const node of route.nodes) {
-        uniqueNodes.set(node.name, node);
-      }
-      for (const edge of route.edges) {
-        uniqueEdges.set(edge.id, edge);
-      }
+      for (const node of route.nodes) uniqueNodes.set(node.name, node);
+      for (const edge of route.edges) uniqueEdges.set(edge.id, edge);
     }
 
     return {
       count: matchedRoutes.length,
+      truncated: depthLimited,
       nodes: Array.from(uniqueNodes.values()),
       edges: Array.from(uniqueEdges.values()),
       routes: matchedRoutes.map((route) => route.nodes.map((node) => node.name)),
